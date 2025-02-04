@@ -1,0 +1,56 @@
+version: '3.8'
+
+services:
+  logging-service: 
+    image: logging-service
+    build:
+      context: LoggingService
+      dockerfile: DockerFile
+    ports:
+     - "8089:8089"
+    environment:
+      - ConnectionStrings__AdminConnection=Host=db;Database=postgres;Username=postgres;Password=postgres
+      - ConnectionStrings__LogConnection=Host=db;Database=LoggingDB;Username=postgres;Password=postgres
+      - ConnectionStrings__HangFireConnection=Host=db;Database=HangFireLoggingDB;Username=postgres;Password=postgres
+      - RabbitMQConfig__Host=my-rabbitmq
+      - RabbitMQConfig__Username=guest
+      - RabbitMQConfig__Password=guest
+      - SeqUrl=http://seq:5347
+    depends_on:
+      db:
+        condition: service_healthy
+      seq:
+        condition: service_started
+
+  db:
+    image: postgres:15
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: postgres  # Default maintenance database
+    ports:
+      - "5432:5432"
+    volumes:
+      - db_data:/var/lib/postgresql/data
+    healthcheck:
+      test: >
+        bash -c 
+        "pg_isready -U postgres -d LoggingDB && 
+         pg_isready -U postgres -d HangFireLoggingDB"
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  seq:
+    image: datalust/seq:latest
+    environment:
+      - ACCEPT_EULA=Y
+    ports:
+      - "5347:5347"
+      - "8088:8088"
+    volumes:
+      - seqdata:/data:z
+
+volumes:
+  db_data:
+  seqdata:
