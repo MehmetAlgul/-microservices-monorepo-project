@@ -1,0 +1,260 @@
+version: '3.8'
+
+services:
+  ### Card Service ###
+  api:
+    build: .
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000
+    volumes:
+      - .:/app
+    ports:
+      - "8000:8000"
+    environment:
+      - DATABASE_URL=postgresql://postgres:password@db:5432/postgres
+      - RABBITMQ_URL=amqp://guest:guest@my-rabbitmq:5678/
+    depends_on:
+      - db
+    networks:
+      - shared-network
+
+  consumer:
+    build: .
+    command: python -m app.consumer
+    volumes:
+      - .:/app
+    environment:
+      - DATABASE_URL=postgresql://postgres:password@db:5432/postgres
+      - RABBITMQ_URL=amqp://guest:guest@my-rabbitmq:5678/
+    networks:
+      - shared-network
+
+  db:
+    image: postgres:13
+    volumes:
+      - postgres_data_card:/var/lib/postgresql/data
+    environment:
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=password
+      - POSTGRES_DB=postgres
+    ports:
+      - "5436:5432"
+    networks:
+      - shared-network
+
+  ### Logging Service ###
+  logging-service:
+    image: logging-service
+    build:
+      context: LoggingService
+      dockerfile: DockerFile
+    ports:
+      - "8089:8089"
+    environment:
+      - ConnectionStrings__AdminConnection=Host=db_logging;Database=postgres;Username=postgres;Password=postgres
+      - ConnectionStrings__LogConnection=Host=db_logging;Database=LoggingDB;Username=postgres;Password=postgres
+      - ConnectionStrings__HangFireConnection=Host=db_logging;Database=HangFireLoggingDB;Username=postgres;Password=postgres
+      - RabbitMQConfig__Host=my-rabbitmq
+      - RabbitMQConfig__Username=guest
+      - RabbitMQConfig__Password=guest
+      - SeqUrl=http://seq:5347
+    depends_on:
+      db_logging:
+        condition: service_healthy
+      seq:
+        condition: service_started
+    networks:
+      - shared-network
+
+  db_logging:
+    image: postgres:15
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: postgres
+    ports:
+      - "5432:5432"
+    volumes:
+      - db_data_logging:/var/lib/postgresql/data
+    healthcheck:
+      test: >
+        bash -c "pg_isready -U postgres -d LoggingDB && pg_isready -U postgres -d HangFireLoggingDB"
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    networks:
+      - shared-network
+
+  seq:
+    image: datalust/seq:latest
+    environment:
+      - ACCEPT_EULA=Y
+    ports:
+      - "5347:5347"
+      - "8088:8088"
+    volumes:
+      - seqdata:/data:z
+    networks:
+      - shared-network
+
+  ### Order Service ###
+  postgres6:
+    image: postgres:15
+    container_name: my-postgres
+    environment:
+      POSTGRES_DB: order_db2
+      POSTGRES_USER: myuser
+      POSTGRES_PASSWORD: mypass
+    ports:
+      - "5438:5432"
+    volumes:
+      - postgres_data_order:/var/lib/postgresql/data
+    networks:
+      - shared-network
+
+  rabbitmq6:
+    image: rabbitmq:3-management
+    container_name: my-rabbitmq
+    environment:
+      RABBITMQ_DEFAULT_USER: guest
+      RABBITMQ_DEFAULT_PASS: guest
+    ports:
+      - "5672:5672"
+      - "15672:15672"
+    networks:
+      - shared-network
+
+  order-service6:
+    build: .
+    depends_on:
+      - postgres6
+      - rabbitmq6
+    environment:
+      SPRING_DATASOURCE_URL: jdbc:postgresql://my-postgres:5432/order_db2
+      SPRING_DATASOURCE_USERNAME: myuser
+      SPRING_DATASOURCE_PASSWORD: mypass
+      SPRING_JPA_HIBERNATE_DDL_AUTO: update
+      RABBITMQ_HOST: my-rabbitmq
+      RABBITMQ_PORT: 5672
+      RABBITMQ_USERNAME: guest
+      RABBITMQ_PASSWORD: guest
+    ports:
+      - "8090:8090"
+    command: ["java", "-jar", "/app/order.jar"]
+    networks:
+      - shared-network
+
+  ### Product Service ###
+  postgres1:
+    image: postgres:15
+    container_name: product-postgres
+    environment:
+      POSTGRES_DB: products
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: mypass
+    ports:
+      - "5433:5432"
+    volumes:
+      - postgres_data_product:/var/lib/postgresql/data
+    networks:
+      - shared-network
+
+  product-service:
+    build: .
+    container_name: product-service
+    depends_on:
+      - postgres1
+    environment:
+      SPRING_DATASOURCE_URL: jdbc:postgresql://product-postgres:5432/products
+      SPRING_DATASOURCE_USERNAME: postgres
+      SPRING_DATASOURCE_PASSWORD: mypass
+      SPRING_JPA_HIBERNATE_DDL_AUTO: update
+      SPRING_RABBITMQ_HOST: my-rabbitmq
+      SPRING_RABBITMQ_PORT: 5672
+      SPRING_RABBITMQ_USERNAME: guest
+      SPRING_RABBITMQ_PASSWORD: guest
+    ports:
+      - "8084:8082"
+    volumes:
+      - ./logs:/app/logs
+    command: ["java", "-jar", "/app/.jar"]
+    networks:
+      - shared-network
+
+  ### Product Search Service ###
+  product-search:
+    build: .
+    container_name: product-search
+    environment:
+      SPRING_DATASOURCE_URL: jdbc:postgresql://product-postgres:5432/products
+      SPRING_DATASOURCE_USERNAME: postgres
+      SPRING_DATASOURCE_PASSWORD: mypass
+      SPRING_JPA_HIBERNATE_DDL_AUTO: update
+      SPRING_RABBITMQ_HOST: my-rabbitmq
+      SPRING_RABBITMQ_PORT: 5678
+      SPRING_RABBITMQ_USERNAME: guest
+      SPRING_RABBITMQ_PASSWORD: guest
+    ports:
+      - "8085:8083"
+    volumes:
+      - ./logs:/app/logs
+    command: [ "java", "-jar", "/app/.jar" ]
+    networks:
+      - shared-network
+
+  ### User Service ###
+  userservice:
+    build: .
+    container_name: userservice
+    depends_on:
+      postgres3:
+        condition: service_healthy
+    ports:
+      - "8081:8081"
+    environment:
+      - SPRING_DATASOURCE_URL=jdbc:postgresql://postgres3:5432/userservice
+      - SPRING_DATASOURCE_USERNAME=admin
+      - SPRING_DATASOURCE_PASSWORD=admin
+      - SPRING_JPA_HIBERNATE_DDL_AUTO=update
+      - SPRING_RABBITMQ_HOST=my-rabbitmq
+      - SPRING_RABBITMQ_PORT=5672
+    command: ["java", "-jar", "/app/userservice.jar"]
+    volumes:
+      - ./target/userservice-0.0.1-SNAPSHOT.jar:/app/userservice.jar
+    networks:
+      - shared-network
+      - app-network
+
+  postgres3:
+    image: postgres:15
+    container_name: postgres3
+    restart: always
+    environment:
+      POSTGRES_DB: userservice
+      POSTGRES_USER: admin
+      POSTGRES_PASSWORD: admin
+    ports:
+      - "5435:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U admin -d userservice"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - shared-network
+      - app-network
+
+networks:
+  shared-network:
+    external: true
+  app-network:
+    driver: bridge
+
+volumes:
+  postgres_data_card:
+  db_data_logging:
+  seqdata:
+  postgres_data_order:
+  postgres_data_product:
+  pgdata:

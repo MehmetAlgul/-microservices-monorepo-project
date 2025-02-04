@@ -1,0 +1,191 @@
+version: '3.8'
+
+services:
+  # CardService API ve Consumer
+  cardservice-api:
+    build:
+      context: ./services/CardService
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000
+    volumes:
+      - ./services/CardService:/app
+    ports:
+      - "8000:8000"
+    environment:
+      - DATABASE_URL=postgresql://postgres:password@global-db/postgres
+      - RABBITMQ_URL=amqp://guest:guest@global-rabbitmq:5672/
+    depends_on:
+      - global-db
+      - global-rabbitmq
+
+  order-service:
+    build:
+      context: ./services/OrderService
+    container_name: order-service
+    depends_on:
+      global-db:
+        condition: service_healthy
+      global-rabbitmq:
+        condition: service_healthy
+    environment:
+      SPRING_DATASOURCE_URL: jdbc:postgresql://global-db:5432/orders
+      SPRING_DATASOURCE_USERNAME: myuser
+      SPRING_DATASOURCE_PASSWORD: mypass
+      SPRING_JPA_HIBERNATE_DDL_AUTO: update
+      SPRING_RABBITMQ_HOST: global-rabbitmq
+      SPRING_RABBITMQ_PORT: 5672
+      SPRING_RABBITMQ_USERNAME: guest
+      SPRING_RABBITMQ_PASSWORD: guest
+    ports:
+      - "8087:8087"
+    volumes:
+      - ./services/OrderService/target/order-0.0.6-SNAPSHOT.jar:/app/order-service.jar
+    command: ["java", "-jar", "/app/order-service.jar"]
+
+  cardservice-consumer:
+    build:
+      context: ./services/CardService
+    command: python -m app.consumer
+    volumes:
+      - ./CardService:/app
+    environment:
+      - DATABASE_URL=postgresql://postgres:password@global-db/postgres
+      - RABBITMQ_URL=amqp://guest:guest@global-rabbitmq:5672/
+    depends_on:
+      - global-db
+      - global-rabbitmq
+
+  # ProductService
+  product-service:
+    build:
+      context: ./services/ProductService/product-service
+    container_name: product-service
+    depends_on:
+      - global-db
+      - global-rabbitmq
+    environment:
+      SPRING_DATASOURCE_URL: jdbc:postgresql://global-db:5432/products
+      SPRING_DATASOURCE_USERNAME: postgres
+      SPRING_DATASOURCE_PASSWORD: mypass
+      SPRING_JPA_HIBERNATE_DDL_AUTO: update
+    ports:
+      - "8084:8082"
+    volumes:
+      - ./services/ProductService/product-service/logs:/app/logs
+    command: ["java", "-jar", "/app/.jar"]
+
+  # SearchService
+  product-search:
+    build:
+      context: ./services/SearchService/search-service
+    container_name: product-search
+    depends_on:
+      - global-db
+      - global-rabbitmq
+    environment:
+      SPRING_DATASOURCE_URL: jdbc:postgresql://global-db:5432/products
+      SPRING_DATASOURCE_USERNAME: postgres
+      SPRING_DATASOURCE_PASSWORD: mypass
+      SPRING_JPA_HIBERNATE_DDL_AUTO: update
+      SPRING_RABBITMQ_HOST: global-rabbitmq
+      SPRING_RABBITMQ_PORT: 5672
+      SPRING_RABBITMQ_USERNAME: guest
+      SPRING_RABBITMQ_PASSWORD: guest
+    ports:
+      - "8085:8083"
+    volumes:
+      - ./services/SearchService/search-service/logs:/app/logs
+    command: [ "java", "-jar", "/app/.jar" ]
+
+  # UserService (Yeni Eklenen)
+  userservice:
+    build:
+      context: ./services/UserService
+    container_name: userservice
+    depends_on:
+      global-db:
+        condition: service_healthy
+      global-rabbitmq:
+        condition: service_healthy
+    ports:
+      - "8081:8081"
+    environment:
+      - SPRING_DATASOURCE_URL=jdbc:postgresql://global-db:5432/userservice
+      - SPRING_DATASOURCE_USERNAME=admin
+      - SPRING_DATASOURCE_PASSWORD=admin
+      - SPRING_JPA_HIBERNATE_DDL_AUTO=update
+      - SPRING_RABBITMQ_HOST=global-rabbitmq
+      - SPRING_RABBITMQ_PORT=5672
+    command: ["java", "-jar", "/app/userservice.jar"]
+    volumes:
+      - ./services/UserService/target/userservice-0.0.1-SNAPSHOT.jar:/app/userservice.jar
+
+  # Logging Service
+  logging-service:
+    image: logging-service
+    build:
+      context: ./services/LoggingService/LoggingService
+      dockerfile: DockerFile
+    ports:
+      - "8089:8089"
+    environment:
+      - ConnectionStrings__LogConnectionString=Server=global-db,1433;Database=LoggingDB;User Id=sa;Password=DockerDbPassword12345.!;TrustServerCertificate=true;
+      - ConnectionStrings__HangFireConnectionString=Server=global-db,1433;Database=HangFireLoggingDB;User Id=sa;Password=DockerDbPassword12345.!;TrustServerCertificate=true;
+    depends_on:
+      global-db:
+        condition: service_healthy
+      global-rabbitmq:
+        condition: service_started
+      global-seq:
+        condition: service_started
+
+  # Global PostgreSQL
+  global-db:
+    image: postgres:13
+    container_name: global-db
+    restart: always
+    volumes:
+      - global_postgres_data:/var/lib/postgresql/data
+    environment:
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=mypass
+      - POSTGRES_DB=products
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d products"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Global RabbitMQ
+  global-rabbitmq:
+    image: rabbitmq:3-management
+    container_name: global-rabbitmq
+    restart: always
+    ports:
+      - "5672:5672"
+      - "15672:15672"
+    environment:
+      - RABBITMQ_DEFAULT_USER=guest
+      - RABBITMQ_DEFAULT_PASS=guest
+    healthcheck:
+      test: ["CMD", "rabbitmqctl", "status"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Global Seq (Logging İçin)
+  global-seq:
+    image: datalust/seq:latest
+    container_name: global-seq
+    environment:
+      - ACCEPT_EULA=Y
+    ports:
+      - "5342:5341"
+      - "8082:80"
+    volumes:
+      - seqdata:/data:z
+
+volumes:
+  global_postgres_data:
+  seqdata:
